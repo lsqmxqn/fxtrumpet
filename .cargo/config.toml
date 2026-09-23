@@ -1,0 +1,15 @@
+# FxTrumpet is distributed as a single file a user can copy and run.
+#
+# The default `x86_64-pc-windows-msvc` configuration links the CRT dynamically,
+# which produces an executable that refuses to start unless the "Microsoft
+# Visual C++ 2015-2022 Redistributable" happens to be installed. That is a poor
+# fit for something whose whole point is being lighter than the alternative.
+# Linking the CRT statically removes the MSVCP140 / VCRUNTIME140 / VCRUNTIME140_1
+# imports entirely; what remains (kernel32, ole32, combase, ...) ships with
+# Windows 10 and later.
+#
+# `build.rs` reads the same setting and switches the vendored C++ to `/MT`.
+# Mixing a static and a dynamic CRT inside one process is unsupported by MSVC,
+# so the two must move together.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

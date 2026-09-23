@@ -1,0 +1,22 @@
+# Text is stored with LF in the repository and checked out using the platform
+# default, which is what core.autocrlf=true already does here — this just makes
+# the intent explicit so a clone on any machine gets the same result.
+* text=auto
+
+# Never rewrite line endings in, or attempt a text diff on, these.
+#
+# *.inf is here for a reason that is not obvious: the driver's .cat signature
+# covers the hash of fxvad.inf and fxvad.sys, so a CRLF -> LF conversion (which
+# `* text=auto` above would happily apply, since the INF is plain ASCII text)
+# changes the file's bytes, invalidates the catalogue, and makes Windows refuse
+# the driver. Every file under driver/ has to survive a round trip byte-exact.
+*.png    binary
+*.ico    binary
+*.fac    binary
+*.inf    binary
+*.sys    binary
+*.cat    binary
+*.dll    binary
+*.exe    binary
+*.pdb    binary
+*.rlib   binary

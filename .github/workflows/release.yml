@@ -1,0 +1,179 @@
+# Build the distributable and, on a version tag, publish it as a GitHub Release.
+#
+# Two entry points, deliberately different:
+#
+#   * pushing a tag `vX.Y.Z`  -> package, check the tag against Cargo.toml, and
+#                                attach the zip + SHA256SUMS to a Release;
+#   * manual dispatch         -> package and upload the zip as a workflow
+#                                artifact, and publish nothing. This is how the
+#                                packaging path gets tested without creating a
+#                                public release as a side effect.
+#
+# To cut a release:
+#
+#   # Cargo.toml must already say version = "X.Y.Z"
+#   git tag vX.Y.Z
+#   git push origin vX.Y.Z
+#
+# The licence and the driver's provenance are restated in the release body on
+# purpose: it is the page people land on when they are looking for a download,
+# and two of the three things in the zip are not FxTrumpet's own work.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: package
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    # Needed to create the Release. Nothing else in this workflow writes.
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Read the version from Cargo.toml
+        id: ver
+        shell: pwsh
+        run: |
+          $toml = Get-Content Cargo.toml -Raw
+          if ($toml -notmatch '(?m)^version\s*=\s*"([^"]+)"') {
+            throw 'could not read `version` from Cargo.toml'
+          }
+          $version = $Matches[1]
+          Write-Host "Cargo.toml version: $version"
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      # A release whose tag and version disagree is worse than no release: the
+      # zip is named after the version and the tag is what people cite, so the
+      # two must not drift. Only meaningful for a tag build.
+      - name: Check the tag matches the version
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $tag = $env:TAG -replace '^v', ''
+          $version = '${{ steps.ver.outputs.version }}'
+          if ($tag -ne $version) {
+            throw "tag '$env:TAG' does not match Cargo.toml version '$version'. Bump the version, or retag."
+          }
+          Write-Host "tag $env:TAG matches version $version"
+
+      # Builds, then asserts the icon / version resource and the absence of a
+      # VC++ redistributable import, then assembles and zips. It also locates the
+      # driver in driver/, which is why the three signed files are committed to
+      # this repository: a runner has no sibling checkout to fall back to.
+      #
+      # -Locked is a *PowerShell* switch (single dash) that forwards `--locked` to
+      # cargo. Writing `--locked` here binds it to -OutDir instead, which builds
+      # happily and writes the whole package into a directory named `--locked`.
+      - name: Package
+        shell: pwsh
+        run: ./package.ps1 -Locked
+
+      # Cosmetic, and written so that it cannot fail: a red job should mean the
+      # release is broken, not that a log summary was.
+      - name: List what was produced
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist)) { Write-Host 'dist/ was not created'; exit 0 }
+          $root = (Get-Location).Path.Length + 1
+          Get-ChildItem dist -Recurse -File | Sort-Object FullName | ForEach-Object {
+            '{0,12:N0}  {1}' -f $_.Length, $_.FullName.Substring($root)
+          }
+          if (Test-Path 'dist/SHA256SUMS.txt') {
+            Write-Host ''
+            Get-Content 'dist/SHA256SUMS.txt'
+          } else {
+            Write-Host 'SHA256SUMS.txt is missing'
+          }
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: FxTrumpet-${{ steps.ver.outputs.version }}-win64
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: FxTrumpet ${{ steps.ver.outputs.version }}
+          files: |
+            dist/FxTrumpet-${{ steps.ver.outputs.version }}-win64.zip
+            dist/SHA256SUMS.txt
+          body: |
+            Tray-resident Windows audio hub, built from this tag on a GitHub runner.
+            `FxTrumpet-${{ steps.ver.outputs.version }}-win64.zip` unpacks to a portable
+            `FxTrumpet\` folder — no installer, and no administrator rights just to run it.
+
+            One tray icon for three things that used to take three programs:
+
+            * **Enhancement** — FxSound's own DSP: 31-band EQ, surround, bass, clarity,
+              a preset library. Needs the virtual sound card, which is bundled.
+            * **Mixer** — per-application volume and mute, per-device volume, switching
+              the default output. No elevation.
+            * **Per-application routing** — pin one program's audio to one device.
+
+            Everything above lives behind the tray icon; there is no main window. Open a
+            window when you need one, close it and its memory goes with it.
+
+            **Install**
+
+            The tray menu follows your Windows display language (Chinese or
+            English); switch it any time from the *Language* submenu.
+
+            1. Unpack anywhere, run `fxtrumpet.exe`, look for the tray icon.
+            2. Right-click it → *Install sound card…*, accept the elevation
+               prompt. (This step needs administrator rights; until it is done
+               there is nothing for the enhancer to sit in front of.)
+            3. Right-click it → *Route output via FxTrumpet*.
+            4. Play something, then right-click → *Tuning panel…* to tune it. Name
+               a preset and press **Save** at the bottom of the panel to keep it.
+            5. For the other two capabilities, right-click → *Mixer & routing…*.
+
+            **This is an alpha, and two things are worth knowing before you rely on it.**
+            Injection-based routing is not implemented — a rule that asks for it falls
+            back to the system policy layer, and both the window and the log say so. And
+            an application pinned to a specific device **bypasses the enhancer**, because
+            the enhancer sits on the system-default path; the mixer marks those rows
+            rather than leaving you to discover it. The install flow has not been tested
+            on a clean machine.
+
+            `--restore-output` (or the tray menu's *Quit*) hands the system's
+            default output back to a real device. Run it if a crash ever leaves
+            the machine silent.
+
+            **Licence**
+
+            AGPL-3.0-or-later. The DSP engine and the virtual sound card driver
+            come from FxSound's AGPL-3.0 sources, and the driver binaries in
+            `driver/` are FxSound's signed package redistributed unmodified.
+            "FxSound" and its artwork belong to their owner; FxTrumpet is an
+            independent, unaffiliated project.
+
+            Generated with WorkBuddy (DeepSeek-V4.1-Flash) — see the README's AI
+            provenance section.

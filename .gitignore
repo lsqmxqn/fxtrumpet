@@ -1,0 +1,51 @@
+# ── build output ───────────────────────────────────────────────────────────
+# target/ is ~6.8 GB after a release build; dist/ is the packaging result.
+/target/
+/dist/
+
+# ── logs written by build.ps1 / test.ps1 ───────────────────────────────────
+/check.log
+/test.log
+
+# ── written by tools/inspect_resources.py (CI uploads it as an artifact) ───
+/icon-check.png
+
+# ── python bytecode (tools/inspect_resources.py) ───────────────────────────
+__pycache__/
+*.pyc
+
+# ── vendored upstream: leftovers, not sources ──────────────────────────────
+# Two copy artefacts, both from the same bug: an absolute source path had its
+# head chopped off and the tail was then re-created *inside* the destination.
+#
+#   C:\Users\Administrator\WorkBuddy\NexBox-Fxsound\fxsound-app\audiopassthru
+#                                                     -> /vendor/audiopassthru/uddy/
+#   C:\Users\Administrator\WorkBuddy\NexBox-Fxsound\fxsound-app\dsp\...
+#                        ^^^^^^^^^^^^^  -> /vendor/dsp/ator/
+#
+# (`ator` is the tail of "Administrator", `uddy` of "WorkBuddy".) Each holds a
+# second copy of the tree — including Win32Main, which vendor.ps1 explicitly
+# refuses to vendor. build.rs never reads them: it compiles exactly the units
+# listed in sources-dsp.txt / sources-audiopassthru.txt.
+/vendor/dsp/ator/
+/vendor/audiopassthru/uddy/
+# Belt and braces, in case the same truncation happens again.
+**/WorkBuddy/NexBox-Fxsound/
+
+# The pre-mirror layout, superseded by the full audiopassthru copy. Inert:
+# nothing has referenced it since build.rs moved to sources-audiopassthru.txt.
+# vendor.ps1 -Prune removes it.
+/vendor/audiopassthru_include/
+
+# ── throwaway probes ───────────────────────────────────────────────────────
+# Diagnostic output written next to the source while chasing a build problem.
+# Nothing in the project starts with an underscore.
+/_*
+
+# ── editors / OS ───────────────────────────────────────────────────────────
+.vs/
+.idea/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini

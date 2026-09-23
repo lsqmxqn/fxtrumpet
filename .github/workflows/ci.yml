@@ -1,0 +1,146 @@
+# Build and check FxTrumpet on every push.
+#
+# What this job is actually protecting:
+#
+#   * the Rust side compiles warning-free — and that is *enforced*, not merely
+#     observed: `Cargo.toml`'s `[lints.rust] warnings = "deny"` turns a warning
+#     into a hard error, so the gate holds identically on a runner and on a
+#     developer's machine. It lives in the manifest rather than as a flag here
+#     because `RUSTFLAGS` would *replace* `.cargo/config.toml`'s rustflags and
+#     silently drop `+crt-static`;
+#   * the unit tests pass — including the two that only fail if the vendored C++
+#     DSP did not link, which is the most fragile part of the build;
+#   * the release executable still carries its icon and version resource and does
+#     not import the VC++ redistributable. Both of those failure modes are
+#     *invisible* in a build log and only show up as "the exe has no icon" or
+#     "the app does not start on someone else's machine", so `package.ps1` is run
+#     here rather than only at release time — it is the thing that asserts them.
+#
+# The resulting zip is uploaded as an artifact, so a green build is directly
+# downloadable without cutting a release.
+#
+# The `--ignored` test (`panel::tests`) is deliberately NOT run here: it opens a
+# real window and needs an interactive desktop session. It is excluded by
+# default for exactly that reason — see src/ui/panel.rs.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A superseded push has nothing useful to say; only the newest run per ref kept.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: check, test, build, package
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Caches ~/.cargo and target/. The vendored C++ objects live under target/,
+      # so this saves the expensive part of the build, not just the Rust crates.
+      - name: Cache cargo and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # `toolchain.ps1` resolves the MSVC toolset through vswhere on this runner
+      # (it falls back to a hardcoded path on the development machine, where
+      # Visual Studio is not registered). Every cargo invocation runs after
+      # dot-sourcing it, because INCLUDE/LIB/PATH do not survive between steps.
+      - name: cargo check
+        shell: pwsh
+        run: |
+          . ./toolchain.ps1
+          cargo check --all-targets --locked
+
+      - name: cargo test
+        shell: pwsh
+        run: |
+          . ./toolchain.ps1
+          cargo test --lib --locked
+
+      # `--locked` is right *here* and only here: build.ps1 forwards its arguments
+      # verbatim to cargo, and this is cargo's flag. package.ps1, by contrast, is
+      # a PowerShell script whose switch is -Locked (single dash) — see the guard
+      # in package.ps1 for what `.\package.ps1 --locked` actually does.
+      - name: Build release executable
+        shell: pwsh
+        run: ./build.ps1 --locked --release --bin fxtrumpet
+
+      # Independent of package.ps1, which reads the version resource through
+      # Windows' own API. This walks the PE resource directory itself and dumps
+      # the largest icon, so a packaging bug cannot hide behind Windows'
+      # perfectly reasonable answer.
+      - name: Inspect the executable's PE resources
+        shell: pwsh
+        run: |
+          python tools/inspect_resources.py target/release/fxtrumpet.exe icon-check.png
+          $info = (Get-Item target/release/fxtrumpet.exe).VersionInfo
+          if (-not $info.ProductName -or -not $info.FileVersion) {
+            throw 'the executable has no version resource — and therefore no icon'
+          }
+          Write-Host "product: $($info.ProductName) $($info.FileVersion)"
+
+      # Asserts the icon, the version resource and the absence of a VC++
+      # redistributable import, then assembles and zips the distributable.
+      #
+      # toolchain.ps1 is dot-sourced here (again) even though -NoBuild skips the
+      # build: the VC++ check needs `dumpbin.exe`, and INCLUDE/LIB/PATH do not
+      # survive from the build step.
+      - name: Package
+        shell: pwsh
+        run: |
+          . ./toolchain.ps1
+          ./package.ps1 -NoBuild
+
+      # Guarded on purpose: an unguarded `Get-Content dist/SHA256SUMS.txt` fails
+      # *after* packaging but *before* the upload, so a cosmetic line can cost you
+      # the artifact. A red job should mean the build is broken.
+      - name: Show what was produced
+        shell: pwsh
+        run: |
+          if (Test-Path 'dist/SHA256SUMS.txt') {
+            Get-Content 'dist/SHA256SUMS.txt'
+          } else {
+            Write-Host 'dist/SHA256SUMS.txt is missing'
+            Get-ChildItem . -Recurse -Filter '*.zip' -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Host $_.FullName }
+          }
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: FxTrumpet-win64
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Keep the icon render for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: FxTrumpet-icon
+          path: icon-check.png
+          if-no-files-found: error
+          retention-days: 7
