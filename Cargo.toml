@@ -1,6 +1,6 @@
 [package]
 name = "fxtrumpet"
-version = "0.1.0-alpha"
+version = "0.1.0-beta"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "Tray-resident audio hub: FxSound-grade enhancement, per-app volume mixer, and per-app output routing"

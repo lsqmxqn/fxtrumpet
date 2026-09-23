@@ -155,7 +155,7 @@ jobs:
                a preset and press **Save** at the bottom of the panel to keep it.
             5. For the other two capabilities, right-click → *Mixer & routing…*.
 
-            **This is an alpha, and two things are worth knowing before you rely on it.**
+            **This is a beta, and two things are worth knowing before you rely on it.**
             Injection-based routing is not implemented — a rule that asks for it falls
             back to the system policy layer, and both the window and the log say so. And
             an application pinned to a specific device **bypasses the enhancer**, because

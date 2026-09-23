@@ -79,9 +79,11 @@ const AUDCLNT_S_BUFFER_EMPTY: i32 = 0x0889_0001u32 as i32;
 /// stops signalling its event.
 const WAIT_TIMEOUT_MS: u32 = 100;
 
-/// Longest we will wait for the two streams to fill before declaring an
-/// underrun and pushing silence.
-const MAX_UNDERRUN_SILENCE_FRAMES: usize = 48_000;
+/// Ceiling on how many frames a single render pass will fill.
+///
+/// The render buffer is normally far smaller than this; the cap only bounds the
+/// work if a driver reports an implausible one.
+const MAX_RENDER_BLOCK_FRAMES: usize = 48_000;
 
 /// A sample format as WASAPI describes it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -615,7 +617,13 @@ pub struct EngineStatus {
     captured_frames: AtomicU64,
     /// Frames rendered since the graph was built.
     rendered_frames: AtomicU64,
-    /// Moments where the renderer wanted data the capture side had not produced.
+    /// Frames the renderer had to invent because the ring ran dry *while the
+    /// capture stream was delivering*.
+    ///
+    /// Silence rendered while nothing is playing deliberately does not count:
+    /// WASAPI loopback delivers nothing at all in that state, so no audio is
+    /// being missed and the silence is the correct output. See
+    /// [`note_render_shortfall`] for how the two are told apart.
     underruns: AtomicU64,
     /// Captured frames discarded because the ring was full.
     overruns: AtomicU64,
@@ -1696,8 +1704,14 @@ fn run_graph(
             || signalled == WAIT_TIMEOUT;
 
         // 5. Drain the capture side into the ring.
+        //
+        // Whether it handed anything over is carried into step 6: it is the only
+        // honest way to tell "nothing is playing" from "we fell behind", and the
+        // render side has no way to observe it on its own. See
+        // `note_render_shortfall`.
+        let mut capture_delivered = false;
         if capture_ready {
-            if let Err(err) = pump_capture(
+            match pump_capture(
                 graph,
                 &mut ring,
                 &mut decoded,
@@ -1707,10 +1721,13 @@ fn run_graph(
                 params,
                 status,
             ) {
-                log::error!("capture failed: {err}");
-                status.set_error(err);
-                next_reason = Some(RebuildReason::Error);
-                break 'outer;
+                Ok(pushed) => capture_delivered = pushed > 0,
+                Err(err) => {
+                    log::error!("capture failed: {err}");
+                    status.set_error(err);
+                    next_reason = Some(RebuildReason::Error);
+                    break 'outer;
+                }
             }
         }
 
@@ -1723,6 +1740,7 @@ fn run_graph(
                 &mut encoded,
                 dsp,
                 bypass_dsp,
+                capture_delivered,
                 status,
             ) {
                 log::error!("render failed: {err}");
@@ -1804,6 +1822,11 @@ fn apply_preset(
 }
 
 /// Reads every available capture packet into the ring.
+///
+/// Returns how many frames were pushed, which is what the caller needs in order
+/// to know whether the capture stream is delivering at all — see
+/// [`note_render_shortfall`]. Zero does not mean failure: with nothing playing,
+/// the loopback stream legitimately has nothing to hand over.
 #[allow(clippy::too_many_arguments)]
 fn pump_capture(
     graph: &Graph,
@@ -1814,8 +1837,8 @@ fn pump_capture(
     mut resampler: Option<&mut StreamResampler>,
     _params: &SharedParams,
     status: &EngineStatus,
-) -> Result<(), String> {
-    let mut packets = 0usize;
+) -> Result<usize, String> {
+    let mut pushed = 0usize;
 
     loop {
         let mut data: *mut u8 = std::ptr::null_mut();
@@ -1863,8 +1886,6 @@ fn pump_capture(
         unsafe { graph.capture.ReleaseBuffer(frames) }
             .map_err(|err| format!("capture ReleaseBuffer failed: {err}"))?;
 
-        packets += 1;
-
         // Channel-map, then resample, then push.
         mapped.clear();
         map_channels(
@@ -1888,16 +1909,50 @@ fn pump_capture(
                 status.overruns.fetch_add(1, Ordering::Relaxed);
             }
             status.captured_frames.fetch_add(1, Ordering::Relaxed);
+            pushed += 1;
         }
     }
 
-    if packets == 0 {
+    if pushed == 0 {
         log::trace!("capture produced nothing this cycle");
     }
-    Ok(())
+    Ok(pushed)
+}
+
+/// Records the shortfall of one render block — but only when it is a shortfall.
+///
+/// An empty ring means one of two completely different things, and conflating
+/// them is what made this figure climb for as long as the machine stayed quiet:
+///
+/// - the capture stream is **delivering** and we still came up short. The graph
+///   fell behind — a rate mismatch with resampling switched off, a stalled
+///   thread, a driver that stopped signalling. Real, and worth counting;
+/// - the capture stream is **idle** because nothing is playing. WASAPI loopback
+///   delivers nothing at all in that state: no event fires and `GetBuffer`
+///   reports the buffer empty. There is genuinely nothing to render, so the
+///   silence the renderer emits is the correct output rather than a fault. The
+///   render side cannot simply stop asking, either — the device has to be fed
+///   whether or not anything is playing.
+///
+/// Hence the gate on `capture_delivered`, which is this iteration's capture
+/// result. Gating per iteration can undercount a long starvation episode during
+/// the cycles where the capture event happens not to have fired, since the two
+/// streams' periods are not in lockstep. That is the deliberate direction to err
+/// in: a diagnostic that quietly misses a frame is worth more than one that
+/// inflates itself on silence, which is a number nobody can act on and everybody
+/// learns to ignore.
+fn note_render_shortfall(status: &EngineStatus, missing: u64, capture_delivered: bool) {
+    if missing == 0 || !capture_delivered {
+        return;
+    }
+    status.underruns.fetch_add(missing, Ordering::Relaxed);
 }
 
 /// Fills the render buffer from the ring, running the DSP over it in place.
+///
+/// `capture_delivered` says whether the capture side handed the ring anything in
+/// this same iteration; it is what decides whether a short block is a fault.
+/// See [`note_render_shortfall`].
 fn pump_render(
     graph: &Graph,
     ring: &mut RingBuffer,
@@ -1905,6 +1960,7 @@ fn pump_render(
     encoded: &mut Vec<u8>,
     dsp: &Dsp,
     bypass_dsp: bool,
+    capture_delivered: bool,
     status: &EngineStatus,
 ) -> Result<(), String> {
     // SAFETY: live client.
@@ -1918,7 +1974,7 @@ fn pump_render(
         return Ok(());
     }
 
-    let frames = available.min(MAX_UNDERRUN_SILENCE_FRAMES);
+    let frames = available.min(MAX_RENDER_BLOCK_FRAMES);
 
     // SAFETY: frames <= the buffer size, which is what GetBuffer requires.
     let raw = unsafe { graph.render.GetBuffer(frames as u32) }
@@ -1927,13 +1983,11 @@ fn pump_render(
     scratch.clear();
     scratch.resize(frames * graph.dsp_channels, 0.0);
 
+    // A short read leaves the tail at whatever `resize` filled it with, which is
+    // silence — the right thing to send either way. Whether it is worth
+    // *counting* is a separate question, and not one this function answers.
     let got = ring.pop_frames(frames, scratch);
-    if got < frames {
-        // Underrun: the tail stays whatever `resize` filled it with.
-        status
-            .underruns
-            .fetch_add((frames - got) as u64, Ordering::Relaxed);
-    }
+    note_render_shortfall(status, (frames - got) as u64, capture_delivered);
 
     if !bypass_dsp {
         dsp.process(scratch, frames as i32);
@@ -2120,6 +2174,45 @@ mod tests {
         let mut out = [0.0f32; 2];
         assert_eq!(ring.pop_frames(2, &mut out), 2);
         assert_eq!(out, [2.0, 3.0]);
+    }
+
+    /// The regression this guards: `underruns` used to climb for as long as the
+    /// machine stayed quiet. The renderer has to be fed whether or not anything
+    /// is playing, so an empty ring was read as "we fell behind" every single
+    /// cycle, and the counter grew at the render period for as long as playback
+    /// stayed paused.
+    #[test]
+    fn silence_while_nothing_plays_is_not_an_underrun() {
+        let status = EngineStatus::default();
+
+        // 480-frame shortfalls — 10 ms at 48 kHz, a typical render period — with
+        // the capture side handing over nothing: nothing is playing, so none of
+        // this is a fault. 6,000 of them is a minute of rendered silence, and it
+        // must leave the counter exactly where it started.
+        for _ in 0..6_000 {
+            note_render_shortfall(&status, 480, false);
+        }
+        assert_eq!(status.underruns(), 0, "idle silence is not an underrun");
+
+        // A block that was filled completely is never a fault, either way.
+        note_render_shortfall(&status, 0, true);
+        note_render_shortfall(&status, 0, false);
+        assert_eq!(status.underruns(), 0, "a full block has no shortfall");
+    }
+
+    #[test]
+    fn a_short_block_counts_only_while_the_capture_stream_is_delivering() {
+        let status = EngineStatus::default();
+
+        note_render_shortfall(&status, 480, true);
+        note_render_shortfall(&status, 120, true);
+        assert_eq!(status.underruns(), 600, "the shortfall is exact");
+
+        // The same shortfalls, now with the capture stream idle: the graph is
+        // not behind simply because there is nothing to play.
+        note_render_shortfall(&status, 480, false);
+        note_render_shortfall(&status, 120, false);
+        assert_eq!(status.underruns(), 600, "idle captures add nothing");
     }
 
     #[test]

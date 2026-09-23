@@ -272,11 +272,11 @@ fn embed_windows_resources() {
 /// The `FILEVERSION` / `PRODUCTVERSION` tuple for a semver string.
 ///
 /// A PE version resource has four *numeric* fields and no way to express
-/// pre-release ordering. So for `0.1.0-alpha` the tuple can only carry the
+/// pre-release ordering. So for `0.1.0-beta` the tuple can only carry the
 /// numeric core, `0,1,0,0`, and the tag lives in the `FileVersion` **string**
 /// alongside it. That is a limit of the format rather than an oversight:
 /// Windows compares these fields as integers, so no value sorts below `0,1,0,0`
-/// and the release this alpha will become is indistinguishable from it by the
+/// and the release this beta will become is indistinguishable from it by the
 /// tuple alone. Anything that needs to tell the two apart has to read the
 /// string — `GetFileVersionInfo` + the `StringFileInfo` block, not the fixed
 /// part.
