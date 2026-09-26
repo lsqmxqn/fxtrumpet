@@ -1678,7 +1678,7 @@ impl PanelApp {
                 );
                 let size = painter.layout_no_wrap(
                     label.clone(),
-                    FontId::proportional(11.5),
+                    FontId::proportional(theme::font::SMALL),
                     palette.text,
                 );
                 let pill = egui::Rect::from_min_size(
@@ -1688,10 +1688,10 @@ impl PanelApp {
                     ),
                     size.size() + Vec2::new(12.0, 6.0),
                 );
-                painter.rect_filled(pill, CornerRadius::same(4), palette.surface);
+                painter.rect_filled(pill, CornerRadius::same(radius::SMALL), palette.surface);
                 painter.rect_stroke(
                     pill,
-                    CornerRadius::same(4),
+                    CornerRadius::same(radius::SMALL),
                     Stroke::new(1.0, palette.border),
                     StrokeKind::Inside,
                 );
@@ -1699,7 +1699,7 @@ impl PanelApp {
                     pill.center(),
                     egui::Align2::CENTER_CENTER,
                     label,
-                    FontId::proportional(11.5),
+                    FontId::proportional(theme::font::SMALL),
                     palette.text,
                 );
 
@@ -1752,7 +1752,7 @@ impl PanelApp {
                 egui::pos2(plot.left() - 5.0, y),
                 egui::Align2::RIGHT_CENTER,
                 format!("{}", db as i32),
-                FontId::proportional(10.0),
+                FontId::proportional(theme::font::MICRO),
                 palette.text_faint,
             );
         }
@@ -1786,7 +1786,7 @@ impl PanelApp {
                 egui::pos2(x, plot.bottom() + 2.0),
                 egui::Align2::CENTER_TOP,
                 label,
-                FontId::proportional(10.0),
+                FontId::proportional(theme::font::MICRO),
                 palette.text_faint,
             );
         }
@@ -1796,7 +1796,7 @@ impl PanelApp {
             egui::pos2(plot.left() - 5.0, plot.top() - 2.0),
             egui::Align2::RIGHT_BOTTOM,
             DB_UNIT,
-            FontId::proportional(10.0),
+            FontId::proportional(theme::font::MICRO),
             palette.text_faint,
         );
     }
@@ -1865,7 +1865,7 @@ impl PanelApp {
                     egui::pos2(x, inner.bottom() - height),
                     Vec2::new(bar_width, height),
                 );
-                painter.rect_filled(bar, CornerRadius::same(2), theme::level_colour(value, palette));
+                painter.rect_filled(bar, CornerRadius::same(radius::SMALL), theme::level_colour(value, palette));
 
                 // The peak marker, drawn as a thin cap rather than a full bar
                 // so it cannot be mistaken for the level itself.
@@ -1877,7 +1877,7 @@ impl PanelApp {
                             egui::pos2(x, y - 1.5),
                             Vec2::new(bar_width, 1.5),
                         ),
-                        CornerRadius::same(1),
+                        CornerRadius::same(radius::SMALL),
                         palette.text_faint,
                     );
                 }

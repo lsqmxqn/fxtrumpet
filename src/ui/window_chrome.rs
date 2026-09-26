@@ -82,10 +82,10 @@ const TITLE: &str = "FxTrumpet";
 
 /// Size of that name, in points.
 ///
-/// Smaller than the card headings below it (13) and than a body label. A
-/// caption is identity, not content: it should be legible at a glance and never
-/// in competition with the numbers the panel exists to show.
-const TITLE_SIZE: f32 = 12.5;
+/// The type scale's [`theme::font::NAME`], shared with the status pill and the
+/// mixer's row names: a caption is identity, not content — legible at a glance
+/// and never in competition with the numbers the panel exists to show.
+const TITLE_SIZE: f32 = theme::font::NAME;
 
 /// The box a button's glyph is drawn inside, in points.
 const GLYPH: f32 = 10.0;

@@ -415,13 +415,13 @@ fn meter(ui: &mut egui::Ui, palette: &Palette, value: f32, width: f32) {
     let height = 4.0;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect, egui::CornerRadius::same(2), palette.sunken);
+    painter.rect_filled(rect, egui::CornerRadius::same(radius::SMALL), palette.sunken);
     let value = value.clamp(0.0, 1.0);
     if value > 0.0 {
         let filled = egui::Rect::from_min_size(rect.min, egui::vec2(width * value, height));
         painter.rect_filled(
             filled,
-            egui::CornerRadius::same(2),
+            egui::CornerRadius::same(radius::SMALL),
             theme::level_colour(value, palette),
         );
     }
@@ -567,9 +567,12 @@ impl eframe::App for MixerApp {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    // The Heading style, not a size literal: this is the
+                    // mixer's window title, and the scale it belongs to is the
+                    // one the design system already publishes.
                     ui.label(
                         egui::RichText::new(text.title)
-                            .size(15.0)
+                            .heading()
                             .strong()
                             .color(palette.text),
                     );
@@ -597,11 +600,11 @@ impl eframe::App for MixerApp {
             .show(ui, |ui| {
                 ui.label(
                     egui::RichText::new(text.routing_hint)
-                        .size(11.0)
+                        .small()
                         .color(palette.text_weak),
                 );
                 if let Some(note) = &self.note {
-                    ui.label(egui::RichText::new(note).size(11.0).color(palette.warning));
+                    ui.label(egui::RichText::new(note).small().color(palette.warning));
                 }
             })
             .response
@@ -701,11 +704,7 @@ impl MixerApp {
             theme::card_title(ui, palette, text.apps);
 
             if rows.is_empty() {
-                ui.label(
-                    egui::RichText::new(text.no_apps)
-                        .size(11.0)
-                        .color(palette.text_faint),
-                );
+                theme::empty_state(ui, palette, text.no_apps);
                 return;
             }
 
@@ -735,7 +734,11 @@ impl MixerApp {
                     // the name — that is where the eye already is.
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 1.0;
-                        ui.label(egui::RichText::new(&row.display_name).size(12.0).color(palette.text));
+                        ui.label(
+                            egui::RichText::new(&row.display_name)
+                                .size(theme::font::NAME)
+                                .color(palette.text),
+                        );
                         let mut second = text.streams(row.streams);
                         if bypasses {
                             // `streams` is empty for a single stream, so the
@@ -748,9 +751,11 @@ impl MixerApp {
                             second.push_str(text.bypasses);
                         }
                         if !second.is_empty() {
-                            ui.label(egui::RichText::new(second).size(10.0).color(
-                                if bypasses { palette.warning } else { palette.text_faint },
-                            ));
+                            ui.label(
+                                egui::RichText::new(second).small().color(
+                                    if bypasses { palette.warning } else { palette.text_faint },
+                                ),
+                            );
                         }
                     });
 
@@ -758,13 +763,17 @@ impl MixerApp {
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
                             // Destination. Rightmost, because it is the column
-                            // that makes this more than a volume mixer.
+                            // that makes this more than a volume mixer. Capped
+                            // at the row's remaining width so a narrow window
+                            // shrinks the box instead of pushing the controls
+                            // off its edge.
+                            let combo_width = 200.0_f32.min(ui.available_width().max(120.0));
                             egui::ComboBox::from_id_salt(format!(
                                 "route-{}",
                                 row.key.to_storage()
                             ))
                             .selected_text(row.destination.clone())
-                            .width(200.0)
+                            .width(combo_width)
                             .show_ui(ui, |ui| {
                                 if ui
                                     .selectable_label(
@@ -797,14 +806,21 @@ impl MixerApp {
                                 }
                             });
 
-                            if ui
-                                .selectable_label(
-                                    row.muted,
-                                    if row.muted { "🔇" } else { "🔊" },
-                                )
-                                .clicked()
+                            // The drawn speaker, not an emoji: the glyph has to
+                            // weigh the same as the controls beside it on every
+                            // machine, and its danger tint carries the muted
+                            // state past a colour-blind read.
+                            let mut muted = row.muted;
+                            if theme::mute_button(
+                                ui,
+                                palette,
+                                egui::Id::new(("app-mute", row.key.to_storage())),
+                                &mut muted,
+                                if row.muted { text.unmute } else { text.mute },
+                            )
+                            .changed()
                             {
-                                edits.mutes.push((index, !row.muted));
+                                edits.mutes.push((index, muted));
                             }
 
                             let mut level = row.volume;
@@ -881,19 +897,19 @@ impl MixerApp {
             theme::card_title(ui, palette, text.devices);
 
             if rows.is_empty() {
-                ui.label(
-                    egui::RichText::new(text.no_devices)
-                        .size(11.0)
-                        .color(palette.text_faint),
-                );
+                theme::empty_state(ui, palette, text.no_devices);
                 return;
             }
 
             for (index, row) in rows.iter().enumerate() {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&row.display).size(12.0).color(
-                        if row.is_default { palette.text } else { palette.text_weak },
-                    ));
+                    ui.label(
+                        egui::RichText::new(&row.display)
+                            .size(theme::font::NAME)
+                            .color(
+                                if row.is_default { palette.text } else { palette.text_weak },
+                            ),
+                    );
                     if row.is_default {
                         theme::status_pill(ui, palette, palette.success, text.is_default);
                     }
@@ -907,14 +923,17 @@ impl MixerApp {
                             if ui.button(text.set_default).clicked() {
                                 defaults.push(index);
                             }
-                            if ui
-                                .selectable_label(
-                                    row.muted,
-                                    if row.muted { "🔇" } else { "🔊" },
-                                )
-                                .clicked()
+                            let mut muted = row.muted;
+                            if theme::mute_button(
+                                ui,
+                                palette,
+                                egui::Id::new(("device-mute", index)),
+                                &mut muted,
+                                if row.muted { text.unmute } else { text.mute },
+                            )
+                            .changed()
                             {
-                                mutes.push((index, !row.muted));
+                                mutes.push((index, muted));
                             }
 
                             let mut level = row.volume;
@@ -993,11 +1012,7 @@ impl MixerApp {
             theme::card_title(ui, palette, text.routing);
 
             if rows.is_empty() {
-                ui.label(
-                    egui::RichText::new(text.no_routes)
-                        .size(11.0)
-                        .color(palette.text_faint),
-                );
+                theme::empty_state(ui, palette, text.no_routes);
                 return;
             }
 
@@ -1005,12 +1020,14 @@ impl MixerApp {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(&row.display_name)
-                            .size(12.0)
-                            .color(palette.text),
+                            .size(theme::font::NAME)
+                            // A rule that is switched off reads as quiet, not
+                            // as absent — the row stays for the switch.
+                            .color(if row.enabled { palette.text } else { palette.text_faint }),
                     );
                     ui.label(
                         egui::RichText::new(format!("→ {}", row.destination))
-                            .size(11.0)
+                            .small()
                             .color(palette.text_weak),
                     );
                     theme::status_pill(
@@ -1030,10 +1047,19 @@ impl MixerApp {
                             if ui.button(text.remove).clicked() {
                                 removals.push(index);
                             }
+                            // The same switch the tuning panel uses for "is it
+                            // on", not a checkbox: on/off is a state, and two
+                            // windows drawing it two ways is two design
+                            // systems.
                             let mut enabled = row.enabled;
-                            if ui
-                                .add(egui::Checkbox::without_text(&mut enabled))
-                                .changed()
+                            if theme::toggle(
+                                ui,
+                                palette,
+                                egui::Id::new(("rule-enabled", index)),
+                                &mut enabled,
+                                i18n::t().tray.enabled,
+                            )
+                            .changed()
                             {
                                 toggles.push((index, enabled));
                             }
@@ -1047,7 +1073,7 @@ impl MixerApp {
                 if row.method == RouteMethod::Injection {
                     ui.label(
                         egui::RichText::new(text.injection_unavailable)
-                            .size(10.0)
+                            .small()
                             .color(palette.warning),
                     );
                 }

@@ -49,3 +49,6 @@ __pycache__/
 *.suo
 Thumbs.db
 Desktop.ini
+
+# ── local assistant workspace data ─────────────────────────────────────────
+.workbuddy/

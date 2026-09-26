@@ -66,12 +66,41 @@ pub mod space {
 
 /// Corner radii, in points.
 pub mod radius {
+    /// Meter bars, the EQ readout pill: fills too small for [`radius::CONTROL`].
+    pub const SMALL: u8 = 3;
     /// Cards.
     pub const CARD: u8 = 8;
     /// Buttons, inputs, slider rails.
     pub const CONTROL: u8 = 6;
     /// The status pill and the toggle track: half the height, so it reads round.
     pub const PILL: u8 = 10;
+}
+
+/// The type scale. Every size the interface names comes from here.
+///
+/// Two of these mirror the text styles [`apply`] installs — `SMALL` is what
+/// `TextStyle::Small` resolves to and `HEADING` what `Heading` does — so a
+/// label can ask for `.small()` or a painter can ask for
+/// `FontId::proportional(font::SMALL)` and both land on the same line height.
+/// The point of having them named anyway is the other three sizes: a call site
+/// that needs a size that is *not* one of the five text styles still has to
+/// pick from this scale, not invent a sixth size.
+pub mod font {
+    /// Plot-axis labels and other marks drawn inside a fixed-size drawing.
+    ///
+    /// Below `SMALL` on purpose, and only for graphics: real text never gets
+    /// this small, because it sits beside numbers that are readable at `SMALL`
+    /// and the smaller face is what keeps the axis from colliding with itself.
+    pub const MICRO: f32 = 10.0;
+    /// Hints, secondary lines, empty states — `TextStyle::Small`.
+    pub const SMALL: f32 = 11.5;
+    /// Row names, the caption's title, the status pill's word.
+    pub const NAME: f32 = 12.5;
+    /// Body text, buttons, card headings — `TextStyle::Body` and `Button`.
+    pub const BODY: f32 = 13.0;
+    /// Window titles and card titles promoted above their cards —
+    /// `TextStyle::Heading`.
+    pub const HEADING: f32 = 15.5;
 }
 
 /// One theme's worth of colour.
@@ -220,12 +249,21 @@ pub fn apply(ctx: &egui::Context) {
             let styles = &mut style.text_styles;
             // egui's Small is 9pt, which is where the panel's illegible
             // secondary text came from. See the module docs.
-            styles.insert(egui::TextStyle::Small, egui::FontId::proportional(11.5));
-            styles.insert(egui::TextStyle::Body, egui::FontId::proportional(13.0));
-            styles.insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
+            styles.insert(
+                egui::TextStyle::Small,
+                egui::FontId::proportional(font::SMALL),
+            );
+            styles.insert(egui::TextStyle::Body, egui::FontId::proportional(font::BODY));
+            styles.insert(
+                egui::TextStyle::Button,
+                egui::FontId::proportional(font::BODY),
+            );
             // 15.5, not egui's 18: a card heading is a signpost, not a banner,
             // and at 18 it competed with the values it was labelling.
-            styles.insert(egui::TextStyle::Heading, egui::FontId::proportional(15.5));
+            styles.insert(
+                egui::TextStyle::Heading,
+                egui::FontId::proportional(font::HEADING),
+            );
             styles.insert(egui::TextStyle::Monospace, egui::FontId::monospace(12.5));
         });
     }
@@ -336,7 +374,7 @@ pub fn card<R>(
 pub fn card_title(ui: &mut Ui, palette: &Palette, text: &str) {
     ui.label(
         RichText::new(text)
-            .size(13.0)
+            .size(font::BODY)
             .strong()
             .color(palette.text),
     );
@@ -462,7 +500,7 @@ pub fn status_pill(ui: &mut Ui, palette: &Palette, colour: Color32, text: &str) 
         .painter()
         .layout_no_wrap(
             text.to_owned(),
-            egui::FontId::proportional(12.5),
+            egui::FontId::proportional(font::NAME),
             palette.text,
         )
         .size()
@@ -490,7 +528,7 @@ pub fn status_pill(ui: &mut Ui, palette: &Palette, colour: Color32, text: &str) 
         egui::pos2(dot.x + 9.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         text,
-        egui::FontId::proportional(12.5),
+        egui::FontId::proportional(font::NAME),
         palette.text,
     );
 }
@@ -511,6 +549,142 @@ pub fn elided(ui: &mut Ui, palette: &Palette, prefix: &str, text: &str) {
         .sense(Sense::hover()),
     );
     response.on_hover_text(text);
+}
+
+/// A mute/unmute icon button.
+///
+/// A speaker drawn in vectors rather than an emoji glyph: an emoji's weight,
+/// optical size and even existence depend on which font the system happens to
+/// hand over, and a row of them next to themed controls reads as borrowed from
+/// somewhere else. The drawn glyph picks up the palette like everything else —
+/// `text_weak` when sound is flowing, `danger` with a slash when muted, so the
+/// state survives a glance as well as a colour-blind user's read.
+///
+/// The interaction mirrors [`toggle`]: the id has to be stable across frames
+/// and unique per row, the state is flipped here and the caller reads
+/// `changed()`, and Space/Enter do what a click would so the control is not a
+/// keyboard dead end.
+pub fn mute_button(
+    ui: &mut Ui,
+    palette: &Palette,
+    id: egui::Id,
+    muted: &mut bool,
+    label: &str,
+) -> Response {
+    let size = Vec2::new(26.0, 22.0);
+    let (rect, mut response) = ui.allocate_exact_size(size, Sense::click());
+
+    if response.clicked() {
+        *muted = !*muted;
+        response.mark_changed();
+    }
+    if response.has_focus()
+        && ui.input(|i| i.key_pressed(egui::Key::Space) || i.key_pressed(egui::Key::Enter))
+    {
+        *muted = !*muted;
+        response.mark_changed();
+    }
+
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), *muted, label)
+    });
+
+    if ui.is_rect_visible(rect) {
+        let fill = if response.is_pointer_button_down_on() {
+            Some(palette.control_active)
+        } else if response.hovered() {
+            Some(palette.control_hover)
+        } else {
+            None
+        };
+        if let Some(fill) = fill {
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(radius::CONTROL), fill);
+        }
+
+        // The state change animates: the waves fade out as the slash fades in,
+        // so a click reads as a transition rather than a swap.
+        let t = ui
+            .ctx()
+            .animate_value_with_time(id, if *muted { 1.0 } else { 0.0 }, 0.10);
+        let ink = if *muted { palette.danger } else { palette.text_weak };
+        draw_speaker(ui.painter(), rect.center(), ink, t);
+    }
+
+    response.on_hover_text(label.to_owned())
+}
+
+/// The speaker glyph: a filled horn, sound waves when unmuted, a slash when
+/// not.
+///
+/// Hand-plotted rather than borrowed from a font for the same reason the
+/// window buttons' glyphs are — see [`crate::ui::window_chrome`] on why four
+/// shapes are not worth a font. The waves are two arc polylines, which is what
+/// egui's line primitives can express without a clip. `muted` is the animated
+/// transition, 0 to 1: the waves and the slash crossfade, so the mark is
+/// neither one nor the other only while the click is still settling.
+fn draw_speaker(painter: &egui::Painter, centre: egui::Pos2, ink: Color32, muted: f32) {
+    let (cx, cy) = (centre.x, centre.y);
+
+    // The horn: a box plus the cone flaring off it, as one filled polygon.
+    let horn = [
+        egui::pos2(cx - 7.0, cy - 2.5),
+        egui::pos2(cx - 4.5, cy - 2.5),
+        egui::pos2(cx - 1.5, cy - 6.0),
+        egui::pos2(cx - 1.5, cy + 6.0),
+        egui::pos2(cx - 4.5, cy + 2.5),
+        egui::pos2(cx - 7.0, cy + 2.5),
+    ];
+    painter.add(egui::Shape::convex_polygon(
+        horn.to_vec(),
+        ink,
+        Stroke::NONE,
+    ));
+
+    if muted < 1.0 {
+        // Two sound waves, each an arc of a circle centred near the horn's
+        // mouth, swept from 45° above the horizontal to 45° below.
+        let wave_ink = ink.gamma_multiply(0.9 * (1.0 - muted));
+        for radius in [3.5, 6.5] {
+            let points: Vec<egui::Pos2> = (-45..=45)
+                .step_by(15)
+                .map(|degrees| {
+                    let angle = (degrees as f32).to_radians();
+                    egui::pos2(
+                        cx - 1.0 + radius * angle.cos(),
+                        cy + radius * angle.sin(),
+                    )
+                })
+                .collect();
+            painter.add(egui::Shape::line(points, Stroke::new(1.5, wave_ink)));
+        }
+    }
+
+    if muted > 0.0 {
+        // The slash, corner to corner of the glyph box: the conventional
+        // "this is silenced" mark, and in `danger` it reads without the hue.
+        painter.line_segment(
+            [egui::pos2(cx - 6.0, cy + 6.0), egui::pos2(cx + 6.0, cy - 6.0)],
+            Stroke::new(1.5, ink.gamma_multiply(muted)),
+        );
+    }
+}
+
+/// An empty list's one-line message, centred and quiet.
+///
+/// "No applications", "no devices", "no rules" — every list in the mixer has
+/// one, and drawing them through one helper is what keeps them from drifting
+/// into three sizes and three alignments.
+pub fn empty_state(ui: &mut Ui, palette: &Palette, text: &str) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(space::XS);
+        ui.label(
+            RichText::new(text)
+                .small()
+                .color(palette.text_faint),
+        );
+        ui.add_space(space::XS);
+    });
 }
 
 #[cfg(test)]
